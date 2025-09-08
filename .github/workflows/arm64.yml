@@ -13,27 +13,41 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+    # 1. 把 Docker 整个 data-root 搬到 /mnt（外挂 16 GB 临时盘）
+    - name: 迁移 Docker 存储目录
+      run: |
+        sudo systemctl stop docker
+        sudo mkdir -p /mnt/docker
+        sudo rsync -a /var/lib/docker/ /mnt/docker/ || true   # 初次可能没有文件
+        echo '{"data-root": "/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+        sudo systemctl start docker
+        docker system prune -af --volumes   # 把旧目录垃圾清掉
+
+    # 2. 继续最大化可用空间（/ 分区）
     - name: 最大化可用空间
       run: |
         sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache /usr/local/lib/android || true
-        docker system prune --all --force --volumes || true
         df -h
 
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # 3. 把 DOCKER_TMPDIR 也指到 /mnt，防止 save 时临时 tar 占 / 分区
     - name: Pull Docker Images and Package
+      env:
+        DOCKER_TMPDIR: /mnt/docker-tmp
       run: |
+        sudo mkdir -p /mnt/docker-tmp
+        sudo chmod 777 /mnt/docker-tmp
         images="${{ github.event.inputs.docker_images }}"
         IFS=',' read -r -a image_array <<< "$images"
         for image in "${image_array[@]}"; do
           echo "==== 处理 $image ===="
-          # 拉取同时立即 save+gz，管道写法不产生中间 tar
           docker pull "${image}" --platform "linux/arm64"
           image_name="${image//\//_}"
           image_name="${image_name//:/_}"
-          docker save "${image}" | gzip -c > "${image_name}-arm64.tar.gz"
-          # 立刻删除本地镜像，释放空间
+          # 用 pigz 比 gzip 快，GitHub runner 自带
+          docker save "${image}" | pigz -9 > "${image_name}-arm64.tar.gz"
           docker image rm "${image}" || true
         done
 
@@ -42,4 +56,4 @@ jobs:
       with:
         name: arm64-docker-images
         path: ${{ github.workspace }}/*-arm64.tar.gz
-        retention-days: 1          # 1 天后自动删除，省空间
+        retention-days: 1
