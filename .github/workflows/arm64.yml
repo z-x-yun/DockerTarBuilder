@@ -19,27 +19,38 @@ jobs:
         docker system prune --all --force --volumes || true
         df -h
 
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - name: Install skopeo
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y skopeo
 
-    - name: Pull Docker Images and Package
+    - name: Save Docker Images with skopeo
       run: |
         images="${{ github.event.inputs.docker_images }}"
         IFS=',' read -r -a image_array <<< "$images"
         for image in "${image_array[@]}"; do
           echo "==== 处理 $image ===="
-          # 拉取同时立即 save+gz，管道写法不产生中间 tar
-          docker pull "${image}" --platform "linux/arm64"
           image_name="${image//\//_}"
           image_name="${image_name//:/_}"
-          docker save "${image}" | gzip -c > "${image_name}-arm64.tar.gz"
-          # 立刻删除本地镜像，释放空间
-          docker image rm "${image}" || true
+          skopeo copy --override-arch=arm64 \
+            docker://$image \
+            docker-archive:${image_name}-arm64.tar.gz
         done
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: arm64-docker-images
-        path: ${{ github.workspace }}/*-arm64.tar.gz
-        retention-days: 1          # 1 天后自动删除，省空间
+        tag_name: docker-images-${{ github.run_id }}
+        name: Docker Images ${{ github.run_id }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Images to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: docker-images-${{ github.run_id }}
+        files: ${{ github.workspace }}/*-arm64.tar.gz
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
