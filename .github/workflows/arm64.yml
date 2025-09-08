@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       docker_images:
-        description: '请填写docker镜像名称 多个用英文逗号分开'
+        description: '请输入docker镜像名称，多个用英文逗号分隔'
         required: true
         default: 'alpine:latest,busybox:stable-glibc'
 
@@ -22,24 +22,36 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Pull Docker Images and Package
+    - name: Pull and Save Docker Images
       run: |
         images="${{ github.event.inputs.docker_images }}"
         IFS=',' read -r -a image_array <<< "$images"
         for image in "${image_array[@]}"; do
-          echo "==== 处理 $image ===="
-          # 拉取同时立即 save+gz，管道写法不产生中间 tar
+          echo "==== 拉取并打包 $image ===="
           docker pull "${image}" --platform "linux/arm64"
           image_name="${image//\//_}"
           image_name="${image_name//:/_}"
-          docker save "${image}" | gzip -c > "${image_name}-arm64.tar.gz"
-          # 立刻删除本地镜像，释放空间
+          docker save "${image}" > "${image_name}-arm64.tar"
+          # 压缩为 zip
+          zip "${image_name}-arm64.zip" "${image_name}-arm64.tar"
+          rm -f "${image_name}-arm64.tar"
           docker image rm "${image}" || true
         done
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: arm64-docker-images
-        path: ${{ github.workspace }}/*-arm64.tar.gz
-        retention-days: 1          # 1 天后自动删除，省空间
+        tag_name: docker-images-${{ github.run_id }}
+        name: Docker Images ${{ github.run_id }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Images to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: docker-images-${{ github.run_id }}
+        files: ${{ github.workspace }}/*-arm64.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
